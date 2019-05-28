@@ -1,6 +1,6 @@
 import sys
 sys.path.append('../')
-from CartToPolar import *
+from cartpolar import *
 from AugSurfSeg import *
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
@@ -13,9 +13,9 @@ import cv2
 
 
 
-ROW_LEN = 96
-COL_LEN = 256
-SIGMA = 10.
+ROW_LEN = 32
+COL_LEN = 64
+SIGMA = 6.
 
 
 def gaus_pdf(x_arry, mean, sigma, A=1.):
@@ -35,11 +35,10 @@ for i in range(ROW_LEN):
     LU_TABLE[i, ] = prob
 
 
-
-class IVUSDataset(Dataset):
+class MoNuDataset(Dataset):
     """convert 3d dataset to Dataset."""
 
-    def __init__(self, img_np, gt_np, gaus_gt=True, transform=None, batch_nb=None):
+    def __init__(self, polar_img_np, polar_gt_np, img_np=None, gt_np=None, gaus_gt=True, transform=None, batch_nb=None):
         """
         Args:
             case_list (of dictionary): all  cases
@@ -47,11 +46,21 @@ class IVUSDataset(Dataset):
             transform (callable, optional): Optional transform to be applied on a sample.
             batch_nb (int, optional): can use to debug.
         """
-        self.img_np = np.load(img_np, mmap_mode='r')
-        self.gt_np = np.load(gt_np, mmap_mode='r')
+        self.img_np = np.load(polar_img_np, mmap_mode='r')
+        self.gt_np = np.load(polar_gt_np, mmap_mode='r')
         self.bn = batch_nb
         self.gaus_gt = gaus_gt
         self.transform = transform
+        self.cart_img_np = img_np
+        self.cart_gt_np = gt_np
+        if self.cart_img_np is None:
+            pass
+        else:
+            self.cart_img_np = np.load(img_np, mmap_mode='r')
+        if self.cart_gt_np is None:
+            pass
+        else:
+            self.cart_gt_np = np.load(gt_np, mmap_mode='r')
 
     def __len__(self):
         if self.bn is None:
@@ -60,20 +69,14 @@ class IVUSDataset(Dataset):
             return self.bn
 
     def __getitem__(self, idx):
-        img = self.img_np[idx,]
-        gt = self.gt_np[idx,]
-        # convert region gt to surface gt
-        ret,thresh = cv2.threshold(imgray,127,255,0)
-        contours, hierarchy = cv2.findContours(thresh,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
-        gt_surf = contours[0]
-
-        # convert to polar
-        img_shape = img.shape[:-1]
-        phy_radius = 0.5*np.sqrt(np.average(np.array(img_shape)**2)) - 1
-        cartpolar = CartPolar(np.array(img_shape)/2.,
-                              phy_radius, COL_LEN, ROW_LEN)
-        polar_img = cartpolar.img2polar(img)
-        polar_gt = cartpolar.gt2polar(gt_surf)
+        polar_img = self.img_np[idx,].copy()
+        polar_gt = self.gt_np[idx,].copy()
+        
+        # normalize image 
+        for i in range(3):
+            mean, std = np.mean(polar_img[i,]), np.std(polar_img[i,])
+            polar_img[i,] = (polar_img[i,]-mean)*1./std
+        
         input_img_gt = {'img': polar_img, 'gt': polar_gt}
 
         # apply augmentation transform
@@ -82,12 +85,26 @@ class IVUSDataset(Dataset):
 
         # print(input_img_gt['gt'].shape)
         if self.gaus_gt:
-            polar_gt_gaus = np.empty_like(polar_img[:,:,0])
+            polar_gt_gaus = np.zeros((ROW_LEN, COL_LEN), dtype=np.float32)
             for i in range(COL_LEN):
-                polar_gt_gaus[:, i] = LU_TABLE[int(
-                    np.clip(np.around(input_img_gt['gt'][i]), 0, ROW_LEN-1)), ]
+                pos = int(np.clip(np.around(input_img_gt['gt'][i]), 0, ROW_LEN-1))
+                # print(pos)
+                polar_gt_gaus[:, i] = LU_TABLE[pos, ]
             input_img_gt['gaus_gt'] = polar_gt_gaus
-        input_img_gt['img'] = np.expand_dims(input_img_gt['img'], axis=0)
-        input_img_gt = {key:value.astype(np.float32) for (key, value) in input_img_gt.items()}
+                # plt.imshow(np.transpose(self.img_np[idx,], (1,2,0)))
+                # plt.plot(polar_gt)
+                # plt.show()
+        # input_img_gt['img'] = np.expand_dims(input_img_gt['img'], axis=0)
+        # plt.imshow(polar_gt_gaus, cmap='gray')
+        # plt.show()
+        if self.cart_img_np is None:
+            pass
+        else:
+            input_img_gt['cart_img'] = self.cart_img_np[idx,].copy()
+        if self.cart_gt_np is None:
+            pass
+        else:
+            input_img_gt['cart_gt'] = self.cart_gt_np[idx,].copy()
+        input_img_gt = {key:torch.from_numpy(value.astype(np.float32)) for (key, value) in input_img_gt.items()}
     
         return input_img_gt
