@@ -10,6 +10,8 @@ from torch import nn
 import shutil
 import os
 from cartpolar import CartPolar
+from metric import dc, assd, hd
+import cv2
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # see issue #152
 
 
@@ -221,6 +223,7 @@ def infer(model, hps):
         # pred = model(batch_img, U_net_only=hps.network.unet_only)
         # pred = pred.squeeze().detach().cpu().numpy()
     rept_nb = 8
+    dc_list, assd_list, hd_list = [], [], []
     for step, batch in enumerate(test_loader):
         pred = np.zeros(64, dtype=np.float32)
         for shift_nb in range(rept_nb):
@@ -245,6 +248,24 @@ def infer(model, hps):
         cartpolar = CartPolar(np.array(img.shape[:-1])/2.,
                             phy_radius, 64, 32)
         pred = cartpolar.gt2cart(pred)
+        # compute metrics
+        # region filling pred
+        pred_array = [np.expand_dims(np.swapaxes(np.rint(np.array(pred)).astype(int), 0, 1), axis=1)]
+        # print("contours shape: ", pred_array[0].shape)
+        # print("gt shape: ", gt.shape)
+        pred_img = np.zeros((146, 146, 3), dtype=np.uint8)
+        cv2.drawContours(pred_img, pred_array, -1, (255,255,255), cv2.FILLED)
+        pred_img = pred_img[:,:,0]
+        DICE = dc(gt, pred_img)
+        ASSD = assd(gt, pred_img)
+        HD = hd(gt, pred_img)
+        dc_list.append(DICE)
+        assd_list.append(ASSD)
+        hd_list.append(HD)
+        print("dc: ", DICE)
+        print("assd: ", ASSD)
+        print("hd: ", HD)
+
         # gt = cartpolar.gt2cart(gt)
         if not os.path.isdir(hps.test.pred_dir):
             os.mkdir(hps.test.pred_dir)
@@ -256,7 +277,12 @@ def infer(model, hps):
         ax[1].contour(gt, levels=[0,1], colors='green')
         f.savefig(pred_dir, bbox_inches='tight')
         plt.close()
-
+    stat_dir = os.path.join(hps.test.pred_dir,"results.txt")
+    dc_list = np.array(dc_list)
+    assd_list = np.array(assd_list)
+    hd_list = np.array(hd_list)
+    output = np.stack([dc_list.mean(), dc_list.std(), assd_list.mean(), assd_list.std(), hd_list.mean(), hd_list.std()])
+    np.savetxt(stat_dir, output, delimiter=',')
     time_elapsed = time.time() - since
     print('Inference complete in {:.0f}m {:.0f}s'.format(
         time_elapsed // 60, time_elapsed % 60))
